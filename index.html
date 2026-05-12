@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Renombrador PDFs Banco — Retamar</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --border: #e2e4e8;
+    --text: #1a1a1a;
+    --muted: #666;
+    --green: #1f8b4c;
+    --green-bg: #d4f1e0;
+    --orange: #c97a17;
+    --orange-bg: #fde8cd;
+    --gray: #6b7280;
+    --gray-bg: #e5e7eb;
+    --red: #c53030;
+    --red-bg: #fad4d4;
+    --accent: #1a73e8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text); margin: 0; padding: 32px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px 0; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+
+  .dropzone {
+    background: var(--card); border: 2px dashed var(--border);
+    border-radius: 12px; padding: 48px 24px; text-align: center;
+    cursor: pointer; transition: all 0.15s ease;
+  }
+  .dropzone:hover, .dropzone.drag-over {
+    border-color: var(--accent); background: #f0f6ff;
+  }
+  .dropzone.drag-over { transform: scale(1.01); }
+  .dropzone-icon { font-size: 48px; margin-bottom: 12px; }
+  .dropzone-text { font-size: 17px; font-weight: 500; margin-bottom: 4px; }
+  .dropzone-sub { color: var(--muted); font-size: 14px; }
+
+  input[type="file"] { display: none; }
+
+  .actions {
+    margin-top: 16px; display: flex; gap: 12px; justify-content: center;
+    flex-wrap: wrap;
+  }
+  button {
+    padding: 10px 20px; border-radius: 8px; border: 1px solid var(--border);
+    background: white; cursor: pointer; font-size: 14px; font-weight: 500;
+    transition: all 0.1s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary {
+    background: var(--accent); color: white; border-color: var(--accent);
+  }
+  button.primary:hover { background: #1557b0; color: white; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .resumen {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px; margin: 24px 0;
+  }
+  .card {
+    background: var(--card); border-radius: 8px; padding: 16px;
+    border: 1px solid var(--border);
+  }
+  .card .num { font-size: 32px; font-weight: 600; line-height: 1; }
+  .card .label { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .card.ok .num { color: var(--green); }
+  .card.rev .num { color: var(--orange); }
+  .card.ign .num { color: var(--gray); }
+  .card.err .num { color: var(--red); }
+
+  table {
+    width: 100%; border-collapse: collapse; background: var(--card);
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  thead th {
+    background: #f0f2f5; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    color: #555; text-align: left; padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid #eef0f3; vertical-align: middle; font-size: 14px; }
+  tr:last-child td { border-bottom: none; }
+  td.flecha { color: #aaa; font-weight: bold; text-align: center; width: 40px; }
+  td.origen { color: var(--muted); font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; word-break: break-all; }
+  td.destino { font-weight: 500; word-break: break-all; }
+  tr.ok td.destino { color: var(--green); }
+  tr.rev td.destino, tr.ign td.destino, tr.err td.destino { color: var(--muted); font-style: italic; }
+
+  .pill {
+    display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; white-space: nowrap;
+  }
+  .pill.ok { background: var(--green-bg); color: var(--green); }
+  .pill.rev { background: var(--orange-bg); color: var(--orange); }
+  .pill.ign { background: var(--gray-bg); color: var(--gray); }
+  .pill.err { background: var(--red-bg); color: var(--red); }
+
+  .progress {
+    margin: 24px 0; background: var(--card); border-radius: 8px;
+    border: 1px solid var(--border); padding: 16px;
+  }
+  .progress-bar {
+    width: 100%; height: 8px; background: #eef0f3;
+    border-radius: 4px; overflow: hidden;
+  }
+  .progress-bar > div {
+    height: 100%; background: var(--accent); transition: width 0.3s;
+  }
+  .progress-text { font-size: 14px; color: var(--muted); margin-top: 8px; }
+
+  .hidden { display: none !important; }
+
+  details {
+    background: var(--card); border-radius: 8px; padding: 12px 16px;
+    border: 1px solid var(--border); margin-bottom: 16px; font-size: 14px;
+  }
+  details summary { cursor: pointer; font-weight: 500; color: #555; }
+  details ul { margin: 8px 0; padding-left: 20px; color: #555; line-height: 1.7; }
+
+  .footer { margin-top: 32px; color: #888; font-size: 12px; text-align: center; }
+
+  .save-status {
+    margin-top: 12px; padding: 10px 14px; border-radius: 6px; font-size: 13px;
+    text-align: center;
+  }
+  .save-status.success { background: var(--green-bg); color: var(--green); }
+  .save-status.error { background: var(--red-bg); color: var(--red); }
+  .save-status:empty { display: none; }
+
+  .ver-celda { width: 80px; text-align: right; }
+  .ver-btn {
+    padding: 4px 10px; font-size: 12px; border-radius: 6px;
+    background: white; border: 1px solid var(--border); cursor: pointer;
+    color: var(--muted); transition: all 0.1s;
+  }
+  .ver-btn:hover { border-color: var(--accent); color: var(--accent); background: #f0f6ff; }
+
+  /* Visor modal de PDFs */
+  .pdf-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; z-index: 1000; align-items: center; justify-content: center;
+    padding: 32px;
+  }
+  .pdf-overlay.show { display: flex; }
+  .pdf-modal {
+    background: white; border-radius: 12px; width: 100%; max-width: 1000px;
+    height: 100%; max-height: 90vh; display: flex; flex-direction: column;
+    overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+  }
+  .pdf-header {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .pdf-header .titulos { flex: 1; min-width: 0; }
+  .pdf-header .titulo-original {
+    font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pdf-header .titulo-nuevo {
+    font-size: 15px; font-weight: 500; color: var(--green);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pdf-header .titulo-nuevo.muted { color: var(--muted); font-style: italic; }
+  .pdf-cerrar {
+    border: none; background: #f0f2f5; width: 36px; height: 36px;
+    border-radius: 50%; cursor: pointer; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .pdf-cerrar:hover { background: var(--border); }
+  .pdf-body { flex: 1; overflow: hidden; background: #525659; }
+  .pdf-body iframe { width: 100%; height: 100%; border: none; }
+
+  /* Configuración de carpeta */
+  .folder-config {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .folder-config-icon { font-size: 24px; flex-shrink: 0; }
+  .folder-config-info { flex: 1; min-width: 0; }
+  .folder-config-label {
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.04em; font-weight: 600; margin-bottom: 2px;
+  }
+  .folder-config-path {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 14px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .folder-config-path.empty { color: var(--muted); font-style: italic; font-family: inherit; }
+  .folder-config.configured { border-color: var(--green); background: #f3faf6; }
+  .folder-config.configured .folder-config-path { color: var(--green); font-weight: 500; }
+  .folder-btn {
+    flex-shrink: 0; padding: 8px 14px; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Renombrador PDFs Banco</h1>
+  <div class="subtitle">Arrastra aquí los PDFs descargados del banco y se renombrarán automáticamente.</div>
+
+  <div id="folderConfig" class="folder-config">
+    <div class="folder-config-icon">📁</div>
+    <div class="folder-config-info">
+      <div class="folder-config-label">Carpeta donde se guardarán los PDFs</div>
+      <div class="folder-config-path" id="folderPath">No has seleccionado ninguna carpeta todavía</div>
+    </div>
+    <button id="folderBtn" class="folder-btn">Seleccionar carpeta…</button>
+  </div>
+
+  <div id="dropzone" class="dropzone">
+    <div class="dropzone-icon">📄</div>
+    <div class="dropzone-text">Arrastra los PDFs aquí</div>
+    <div class="dropzone-sub">o haz clic para seleccionarlos</div>
+    <input type="file" id="fileInput" multiple accept="application/pdf">
+  </div>
+
+  <div id="progress" class="progress hidden">
+    <div class="progress-bar"><div id="progressFill" style="width:0%"></div></div>
+    <div class="progress-text" id="progressText">Procesando...</div>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="resumen">
+      <div class="card ok"><div class="num" id="numOk">0</div><div class="label">Renombrados</div></div>
+      <div class="card rev"><div class="num" id="numRev">0</div><div class="label">A revisar a mano</div></div>
+      <div class="card ign"><div class="num" id="numIgn">0</div><div class="label">No se renombran</div></div>
+      <div class="card err"><div class="num" id="numErr">0</div><div class="label">Con error</div></div>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="saveBtn">💾 Guardar en mi carpeta</button>
+      <button id="resetBtn">Procesar otros PDFs</button>
+    </div>
+    <div id="saveStatus" class="save-status"></div>
+
+    <details style="margin-top:16px">
+      <summary>¿Qué significa cada estado?</summary>
+      <ul>
+        <li><b>Renombrados</b>: el script ha identificado el tipo de movimiento y lo ha renombrado siguiendo el patrón de Ricardo. Se guardan en la carpeta <code>PDFs_renombrados/</code>.</li>
+        <li><b>A revisar a mano</b>: el script no ha sabido identificar el tipo. Se guardan con su nombre original en <code>PDFs_no_sirven/</code>.</li>
+        <li><b>No se renombran</b>: PDFs que Ricardo no suele renombrar (devoluciones DETIR, nóminas). También en <code>PDFs_no_sirven/</code>.</li>
+        <li><b>Con error</b>: ha fallado algo al procesarlo. También en <code>PDFs_no_sirven/</code>.</li>
+      </ul>
+    </details>
+
+    <table style="margin-top:24px">
+      <thead>
+        <tr><th>Estado</th><th>Nombre original</th><th></th><th>Resultado</th><th></th></tr>
+      </thead>
+      <tbody id="resultsTable"></tbody>
+    </table>
+  </div>
+
+  <div class="footer">Renombrador PDFs Banco · Colegio Retamar · Funciona 100% en tu navegador (los PDFs no salen de tu ordenador)</div>
+</div>
+
+<!-- Visor modal de PDF -->
+<div id="pdfOverlay" class="pdf-overlay">
+  <div class="pdf-modal">
+    <div class="pdf-header">
+      <div class="titulos">
+        <div class="titulo-original" id="pdfTituloOriginal"></div>
+        <div class="titulo-nuevo" id="pdfTituloNuevo"></div>
+      </div>
+      <button class="pdf-cerrar" id="pdfCerrar" title="Cerrar">✕</button>
+    </div>
+    <div class="pdf-body">
+      <iframe id="pdfIframe"></iframe>
+    </div>
+  </div>
+</div>
+
+<script>
+// Configurar pdf.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// =============================================================================
+// Lógica de renombrado (traducida del Python)
+// =============================================================================
+
+function detectarFormato(texto) {
+  if (texto.includes("Detalle del movimiento")) {
+    if (texto.includes("Tipo de Operación") || texto.includes("Tipo de movimiento")) {
+      return "santander";
+    }
+    return "detalle";
+  }
+  if (texto.includes("Información general") && texto.includes("Concepto específico")) {
+    return "detalle";
+  }
+  if (texto.includes("Domiciliación") && texto.includes("pagos")) {
+    return "domiciliacion";
+  }
+  return "desconocido";
+}
+
+function extraerCamposDetalle(texto) {
+  const campos = { texto, formato: "detalle" };
+
+  let m = texto.match(/([+-])\s*([\d.]+,\d{2})\s*€/);
+  if (m) {
+    campos.importe_signo = m[1];
+    campos.importe_abs = m[2];
+  } else {
+    // Aceptar variaciones: "Importe -1,09 euros", "Importe-1,09euros", etc.
+    m = texto.match(/Importe\s*(-?)\s*([\d.]+,\d{2})\s*euros/i);
+    if (m) {
+      campos.importe_signo = m[1] || "+";
+      campos.importe_abs = m[2];
+    }
+  }
+
+  m = texto.match(/\bFecha\s+(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) {
+    campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+  }
+
+  m = texto.match(/Fecha valor\s+(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) {
+    campos.fecha_valor_str = `${m[3]}${m[2]}${m[1]}`;
+  }
+
+  // "Concepto específico" puede venir pegado: "Concepto específicoPR.DE..."
+  m = texto.match(/Concepto\s*específico\s*(.+)/);
+  if (m) {
+    campos.concepto_especifico = m[1].trim();
+  }
+
+  m = texto.match(/Referencia2\s+(\S+)/);
+  if (m) {
+    campos.referencia2 = m[1].trim();
+  }
+
+  m = texto.match(/Nombre del ordenante\s+(.+)/);
+  if (m) {
+    campos.nombre_ordenante = m[1].trim();
+  }
+
+  m = texto.match(/Nombre del Acreedor\s+(.+)/);
+  if (m) {
+    campos.nombre_acreedor = m[1].trim();
+  }
+
+  m = texto.match(/Detalle del movimiento\s+Importe\s*\n([^\n]+)/);
+  if (m) {
+    let primera = m[1].trim();
+    primera = primera.replace(/\s*[+-]?\s*[\d.]+,\d{2}\s*€\s*$/, "");
+    campos.movimiento_titular = primera.trim();
+  }
+
+  return campos;
+}
+
+function extraerCamposDomiciliacion(texto) {
+  const campos = { texto, formato: "domiciliacion" };
+
+  const fechas = [...texto.matchAll(/\b(\d{2})\.(\d{2})\.(\d{2})\b/g)];
+  if (fechas.length >= 2) {
+    const [, d, mo, y] = fechas[1];
+    campos.fecha_str = `20${y}${mo}${d}`;
+  } else if (fechas.length === 1) {
+    const [, d, mo, y] = fechas[0];
+    campos.fecha_str = `20${y}${mo}${d}`;
+  }
+
+  const importes = [...texto.matchAll(/\b([\d.]+,\d{2})\b/g)];
+  if (importes.length > 0) {
+    campos.importe_signo = "-";
+    campos.importe_abs = importes[0][1];
+  }
+
+  const m = texto.match(/\d{2}\.\d{2}\.\d{2}\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .,&\-']+?)\s+RETAMAR/i);
+  if (m) {
+    campos.entidad_ordenante = m[1].trim();
+  }
+
+  return campos;
+}
+
+function extraerCamposSantander(texto) {
+  const campos = { texto, formato: "santander" };
+
+  // Detectar subformato: "Operaciones en efectivo" vs "Detalle del movimiento"
+  if (/Operaciones\s+en\s+efectivo/i.test(texto)) {
+    campos.subformato = "efectivo";
+  } else {
+    campos.subformato = "detalle";
+  }
+
+  // Fecha:
+  // - Subformato efectivo: "Fecha: 2026-05-05"
+  // - Subformato detalle: el PDF tiene tres fechas en orden:
+  //     1) "Fecha y hora de la petición: 06/05/2026 ..."  ← cabecera, IGNORAR
+  //     2) "Fecha Operación 05/05/2026"  ← LA QUE QUEREMOS
+  //     3) "Fecha Valor 05/05/2026"
+  //   Como pdf.js descoloca los items, no podemos buscar después de la
+  //   etiqueta. Cogemos la segunda fecha DD/MM/YYYY que aparezca en el texto.
+  let m;
+  if (campos.subformato === "efectivo") {
+    m = texto.match(/Fecha:\s*(\d{4})-(\d{2})-(\d{2})/);
+    if (m) campos.fecha_str = `${m[1]}${m[2]}${m[3]}`;
+  } else {
+    const fechas = [...texto.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)];
+    if (fechas.length >= 2) {
+      // La 1ª es la fecha de la petición (cabecera). La 2ª es Fecha Operación.
+      const [, d, mo, y] = fechas[1];
+      campos.fecha_str = `${y}${mo}${d}`;
+    } else if (fechas.length === 1) {
+      const [, d, mo, y] = fechas[0];
+      campos.fecha_str = `${y}${mo}${d}`;
+    }
+  }
+
+  // Importe: en "Detalle del movimiento" → "Importe -317,73 EUR" o "317,73 EUR"
+  // En "Operaciones en efectivo" → "5.000,00 € EUR"
+  m = texto.match(/(-?)([\d.]+,\d{2})\s*€?\s*EUR/i);
+  if (m) {
+    campos.importe_signo = m[1] || "+";
+    campos.importe_abs = m[2];
+  }
+
+  // Concepto completo: descripción larga del movimiento.
+  // Aparece como "Concepto completo\n<TEXTO>". Capturamos hasta el siguiente
+  // bloque "Información adicional" o final.
+  m = texto.match(/Concepto\s+completo\s*\n?\s*([\s\S]+?)(?:\n\s*Información\s+adicional|$)/i);
+  if (m) {
+    campos.concepto_completo = m[1].replace(/\s+/g, " ").trim();
+  }
+
+  // Para "Operaciones en efectivo": campo "En concepto de:"
+  m = texto.match(/En\s+concepto\s+de:\s*([^\n]+)/i);
+  if (m) {
+    campos.concepto_efectivo = m[1].trim();
+  }
+
+  return campos;
+}
+
+function extraerCampos(texto) {
+  const formato = detectarFormato(texto);
+  if (formato === "detalle") return extraerCamposDetalle(texto);
+  if (formato === "domiciliacion") return extraerCamposDomiciliacion(texto);
+  if (formato === "santander") return extraerCamposSantander(texto);
+  return { texto, formato: "desconocido" };
+}
+
+function limpiarNombreOrdenante(nombre) {
+  const m = nombre.match(/^\d+-(.+)$/);
+  return m ? m[1].trim() : nombre.trim();
+}
+
+// =============================================================================
+// Detección específica para Santander
+// =============================================================================
+
+function detectarTipoSantander(campos) {
+  const concepto = campos.concepto_completo || "";
+  const conceptoEf = campos.concepto_efectivo || "";
+
+  // 1) Operaciones en efectivo (formato distinto, sin "Detalle del movimiento")
+  if (campos.subformato === "efectivo") {
+    if (/traspaso\s+caja\s+a\s+banco/i.test(conceptoEf)) {
+      return ["Traspaso caja a bco", ""];
+    }
+    if (/ingreso\s+efectivo/i.test(conceptoEf)) {
+      return ["Ingreso efectivo", ""];
+    }
+    // Fallback: capitalizamos primera letra
+    if (conceptoEf) {
+      const desc = conceptoEf.charAt(0).toUpperCase() + conceptoEf.slice(1);
+      return [desc, ""];
+    }
+    return [null, null];
+  }
+
+  // ---- A partir de aquí, subformato "detalle" --------------------------
+  // No usamos "tipo_operacion" porque pdf.js descoloca los items y el campo
+  // se extrae mal. Detectamos el tipo por palabras clave del concepto.
+
+  // 2) Recibo domiciliado: concepto empieza por "RECIBO ..."
+  // Ej: "RECIBO SOLRED Nº RECIBO 0049 5185 ..."
+  let m = concepto.match(/^RECIBO\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .&\-']*?)(?:\s+N[ºo]\s|\s+\d|\s+REF\.|$)/i);
+  if (m) {
+    return ["Rec de", m[1].trim()];
+  }
+
+  // 3) Comisiones: concepto empieza por "COMISION POR ..."
+  if (/^COMISI[OÓ]N\s+POR/i.test(concepto)) {
+    if (/TPV/i.test(concepto)) {
+      return ["Comisión por TPV", ""];
+    }
+    if (/transferenci/i.test(concepto)) {
+      return ["Comisión por transferencia", ""];
+    }
+    if (/mantenimient/i.test(concepto)) {
+      return ["Comisión por mantenimiento", ""];
+    }
+    // Fallback genérico: extraer lo que venga después de "COMISION POR"
+    m = concepto.match(/COMISI[OÓ]N\s+POR\s+([A-ZÁÉÍÓÚÑ ]+?)(?:\s+\d|$)/i);
+    if (m) {
+      const desc = m[1].trim().toLowerCase();
+      return ["Comisión por " + desc, ""];
+    }
+    return ["Comisión", ""];
+  }
+
+  // 4) Liquidación efectuada
+  if (/LIQUIDACION\s+EFECTUADA/i.test(concepto)) {
+    return ["LIQUIDACIONEFECTUADA", ""];
+  }
+
+  // 5) Transferencia emitida → "Trf a [Nombre]"
+  // Ej: "TRANSFERENCIA A FAVOR DE Rosario Jimenez Cabrera CONCEPTO: ..."
+  m = concepto.match(/TRANSFERENCIA\s+A\s+FAVOR\s+DE\s+(.+?)(?:\s+CONCEPTO\s*:|$)/i);
+  if (m) {
+    return ["Trf a", m[1].trim()];
+  }
+
+  // 6) Transferencia recibida → "Trf de [NOMBRE]"
+  // Ej: "TRANSFERENCIA DE CRISTINA LLANEZA TUERO, CONCEPTO ..."
+  m = concepto.match(/TRANSFERENCIA\s+DE\s+(.+?)(?:[,.]|\s+CONCEPTO|$)/i);
+  if (m) {
+    return ["Trf de", m[1].trim()];
+  }
+
+  return [null, null];
+}
+
+function detectarTipoYDescripcion(campos) {
+  const formato = campos.formato;
+
+  // PDFs de Santander
+  if (formato === "santander") {
+    return detectarTipoSantander(campos);
+  }
+
+  if (formato === "domiciliacion") {
+    const entidad = (campos.entidad_ordenante || "").trim();
+    return entidad ? ["Rec de", entidad] : [null, null];
+  }
+
+  if (formato !== "detalle") return [null, null];
+
+  const conceptoEsp = campos.concepto_especifico || "";
+  const titular = campos.movimiento_titular || "";
+  const ordenante = campos.nombre_ordenante || "";
+  const acreedor = campos.nombre_acreedor || "";
+  const referencia2 = campos.referencia2 || "";
+  const signo = campos.importe_signo || "";
+
+  if (conceptoEsp.includes("TGSS.COTIZACION") || titular.includes("TGSS.COTIZACION")) {
+    return ["Pago cuotas SS", ""];
+  }
+
+  if (conceptoEsp.startsWith("PR.DE")) {
+    return ["Precio devoluciones", `(${conceptoEsp})`];
+  }
+
+  if (conceptoEsp.startsWith("DETIR")) {
+    return ["__IGNORAR__", "DETIR (no se renombra)"];
+  }
+
+  if (titular.includes("PAG NOMINAS") || conceptoEsp === "PAG NOMINAS") {
+    return ["__IGNORAR__", "Nómina (no se renombra)"];
+  }
+
+  if (conceptoEsp.startsWith("FATIR") && referencia2) {
+    return ["Remesa recurrente", `(Ref.${referencia2})`];
+  }
+
+  if (signo === "+" && ordenante) {
+    return ["Trf de", limpiarNombreOrdenante(ordenante)];
+  }
+
+  if (signo === "-" && acreedor && !acreedor.includes("TGSS")) {
+    return ["Rec de", acreedor.trim()];
+  }
+
+  return [null, null];
+}
+
+function formatearImporte(importeAbs) {
+  return importeAbs.endsWith(",00") ? importeAbs.slice(0, -3) : importeAbs;
+}
+
+function construirNombre(campos) {
+  if (!campos.fecha_str || !campos.importe_abs) {
+    return null;
+  }
+  const [tipo, descripcion] = detectarTipoYDescripcion(campos);
+  if (tipo === "__IGNORAR__") return "__IGNORAR__";
+  if (tipo === null) return null;
+  const importe = formatearImporte(campos.importe_abs);
+  if (descripcion) {
+    return `${campos.fecha_str} ${tipo} ${descripcion} ${importe}€.pdf`;
+  }
+  return `${campos.fecha_str} ${tipo} ${importe}€.pdf`;
+}
+
+function diagnosticar(campos) {
+  const pistas = [`formato=${campos.formato || "desconocido"}`];
+  if (!campos.fecha_str) pistas.push("sin fecha");
+  if (!campos.importe_abs) pistas.push("sin importe");
+  if (campos.movimiento_titular) {
+    pistas.push(`movimiento='${campos.movimiento_titular.slice(0, 60)}'`);
+  }
+  return pistas.join("; ");
+}
+
+// =============================================================================
+// Extracción de texto del PDF con pdf.js
+// =============================================================================
+
+async function extraerTextoPDF(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+  const textContent = await page.getTextContent();
+
+  // Reconstruir el texto agrupando items por línea (misma coordenada y).
+  // pdf.js da los items en orden de lectura con sus coordenadas; agrupamos
+  // los que están en la misma "fila" y separamos las filas con \n.
+  const lineas = new Map(); // y -> array de items {x, str}
+  for (const item of textContent.items) {
+    const y = Math.round(item.transform[5]); // coordenada vertical
+    const x = item.transform[4]; // coordenada horizontal
+    if (!lineas.has(y)) lineas.set(y, []);
+    lineas.get(y).push({ x, str: item.str });
+  }
+
+  // Ordenar las y de mayor a menor (PDF: y crece hacia arriba), e items por x
+  const ys = [...lineas.keys()].sort((a, b) => b - a);
+  const lineasTexto = ys.map(y => {
+    const items = lineas.get(y).sort((a, b) => a.x - b.x);
+    // Concatenar: si entre dos items hay distancia significativa, espacio;
+    // si están pegados, sin espacio (pdf.js a veces los parte arbitrariamente).
+    let linea = "";
+    let prevEnd = null;
+    for (const it of items) {
+      if (prevEnd !== null && it.x - prevEnd > 2) {
+        linea += " ";
+      }
+      linea += it.str;
+      prevEnd = it.x + (it.str.length * 5); // estimación gruesa del ancho
+    }
+    // Normalizar espacios múltiples a uno solo
+    return linea.replace(/\s+/g, " ").trim();
+  });
+
+  return lineasTexto.join("\n");
+}
+
+// =============================================================================
+// UI
+// =============================================================================
+
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const progressDiv = document.getElementById("progress");
+const progressFill = document.getElementById("progressFill");
+const progressText = document.getElementById("progressText");
+const resultsDiv = document.getElementById("results");
+const resultsTable = document.getElementById("resultsTable");
+const saveBtn = document.getElementById("saveBtn");
+const saveStatus = document.getElementById("saveStatus");
+const resetBtn = document.getElementById("resetBtn");
+const folderConfig = document.getElementById("folderConfig");
+const folderPath = document.getElementById("folderPath");
+const folderBtn = document.getElementById("folderBtn");
+
+let resultadosGlobales = [];
+let carpetaDestino = null; // FileSystemDirectoryHandle persistido
+
+// =============================================================================
+// Persistencia de la carpeta destino con IndexedDB
+// =============================================================================
+// Los handles de File System Access API se pueden guardar en IndexedDB y
+// recuperarlos entre sesiones. La primera vez Chrome pedirá permiso, en las
+// siguientes veces lo recordará automáticamente.
+
+const DB_NAME = "renombrador-pdfs";
+const DB_STORE = "config";
+const DB_KEY = "carpetaDestino";
+
+function abrirDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function guardarHandleEnDB(handle) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).put(handle, DB_KEY);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function leerHandleDeDB() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readonly");
+    const req = tx.objectStore(DB_STORE).get(DB_KEY);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function borrarHandleDeDB() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).delete(DB_KEY);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function pedirPermisos(handle, mode = "readwrite") {
+  // Comprobar si ya tenemos permiso
+  const opts = { mode };
+  if ((await handle.queryPermission(opts)) === "granted") return true;
+  // Pedirlo
+  if ((await handle.requestPermission(opts)) === "granted") return true;
+  return false;
+}
+
+function actualizarUICarpeta() {
+  if (carpetaDestino) {
+    folderConfig.classList.add("configured");
+    folderPath.classList.remove("empty");
+    folderPath.textContent = `📂 ${carpetaDestino.name}`;
+    folderBtn.textContent = "Cambiar…";
+  } else {
+    folderConfig.classList.remove("configured");
+    folderPath.classList.add("empty");
+    folderPath.textContent = "No has seleccionado ninguna carpeta todavía";
+    folderBtn.textContent = "Seleccionar carpeta…";
+  }
+}
+
+async function elegirCarpeta() {
+  if (!window.showDirectoryPicker) {
+    alert("Tu navegador no permite seleccionar carpeta. Usa Chrome o Edge.");
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({
+      mode: "readwrite",
+      startIn: "documents"
+    });
+    carpetaDestino = handle;
+    await guardarHandleEnDB(handle);
+    actualizarUICarpeta();
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      alert(`Error al seleccionar la carpeta: ${err.message}`);
+    }
+  }
+}
+
+folderBtn.addEventListener("click", elegirCarpeta);
+
+// Al cargar la página, intentar recuperar la última carpeta usada
+(async function inicializarCarpeta() {
+  try {
+    const handle = await leerHandleDeDB();
+    if (handle) {
+      // Comprobar que aún tenemos permiso (sin pedir, solo verificar)
+      const perm = await handle.queryPermission({ mode: "readwrite" });
+      if (perm === "granted" || perm === "prompt") {
+        carpetaDestino = handle;
+        actualizarUICarpeta();
+      } else {
+        // Permiso denegado o caducado: olvidar la carpeta
+        await borrarHandleDeDB();
+      }
+    }
+  } catch (err) {
+    console.warn("No se pudo recuperar la carpeta guardada:", err);
+  }
+})();
+
+// =============================================================================
+// Botón de guardar
+// =============================================================================
+
+saveBtn.addEventListener("click", async () => {
+  // Si no hay carpeta configurada, abrir el selector
+  if (!carpetaDestino) {
+    await elegirCarpeta();
+    if (!carpetaDestino) return;
+  }
+
+  try {
+    saveStatus.className = "save-status";
+    saveStatus.textContent = "Guardando…";
+
+    // Asegurar permisos (la primera vez que se usa, Chrome puede pedir confirmar)
+    const ok = await pedirPermisos(carpetaDestino, "readwrite");
+    if (!ok) {
+      saveStatus.className = "save-status error";
+      saveStatus.textContent = "Sin permiso de escritura en la carpeta. Selecciona otra.";
+      return;
+    }
+
+    // Crear las dos subcarpetas dentro de la carpeta elegida
+    const carpetaRenombrados = await carpetaDestino.getDirectoryHandle("PDFs_renombrados", { create: true });
+    const carpetaNoSirven = await carpetaDestino.getDirectoryHandle("PDFs_no_sirven", { create: true });
+
+    let guardadosOk = 0, guardadosNoSirven = 0;
+
+    for (const r of resultadosGlobales) {
+      let carpetaActual, nombre;
+      if (r.estado === "OK") {
+        carpetaActual = carpetaRenombrados;
+        nombre = r.nombreNuevo;
+        guardadosOk++;
+      } else {
+        carpetaActual = carpetaNoSirven;
+        nombre = r.nombreOriginal;
+        guardadosNoSirven++;
+      }
+
+      // Si ya existe un fichero con ese nombre, añadir sufijo (2), (3)...
+      let nombreFinal = nombre;
+      let sufijo = 2;
+      while (await archivoExiste(carpetaActual, nombreFinal)) {
+        const punto = nombre.lastIndexOf(".");
+        nombreFinal = punto > 0
+          ? `${nombre.slice(0, punto)} (${sufijo})${nombre.slice(punto)}`
+          : `${nombre} (${sufijo})`;
+        sufijo++;
+      }
+
+      const fileHandle = await carpetaActual.getFileHandle(nombreFinal, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(r.archivoBlob);
+      await writable.close();
+    }
+
+    saveStatus.className = "save-status success";
+    saveStatus.innerHTML = `✓ Guardados <b>${guardadosOk}</b> PDFs en <code>PDFs_renombrados/</code> y <b>${guardadosNoSirven}</b> en <code>PDFs_no_sirven/</code> dentro de <b>${escapeHtml(carpetaDestino.name)}</b>.`;
+  } catch (err) {
+    if (err.name === "AbortError") {
+      saveStatus.textContent = "";
+      return;
+    }
+    saveStatus.className = "save-status error";
+    saveStatus.textContent = `Error al guardar: ${err.message}`;
+  }
+});
+
+dropzone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => procesarArchivos(e.target.files));
+
+dropzone.addEventListener("dragover", e => {
+  e.preventDefault();
+  dropzone.classList.add("drag-over");
+});
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag-over"));
+dropzone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropzone.classList.remove("drag-over");
+  procesarArchivos(e.dataTransfer.files);
+});
+
+resetBtn.addEventListener("click", () => {
+  resultadosGlobales = [];
+  resultsTable.innerHTML = "";
+  resultsDiv.classList.add("hidden");
+  saveStatus.textContent = "";
+  saveStatus.className = "save-status";
+  dropzone.classList.remove("hidden");
+  fileInput.value = "";
+});
+
+
+async function archivoExiste(dirHandle, nombre) {
+  try {
+    await dirHandle.getFileHandle(nombre);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function procesarArchivos(fileList) {
+  const archivos = Array.from(fileList).filter(f =>
+    f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
+  );
+  if (archivos.length === 0) {
+    alert("Arrastra archivos PDF, por favor.");
+    return;
+  }
+
+  dropzone.classList.add("hidden");
+  resultsDiv.classList.add("hidden");
+  progressDiv.classList.remove("hidden");
+  resultadosGlobales = [];
+
+  for (let i = 0; i < archivos.length; i++) {
+    const file = archivos[i];
+    progressText.textContent = `Procesando ${i + 1} de ${archivos.length}: ${file.name}`;
+    progressFill.style.width = `${((i + 1) / archivos.length) * 100}%`;
+
+    try {
+      const texto = await extraerTextoPDF(file);
+      const campos = extraerCampos(texto);
+      const nombreNuevo = construirNombre(campos);
+
+      let estado, motivo = "";
+      if (nombreNuevo === "__IGNORAR__") {
+        estado = "IGNORADO";
+        const [, m] = detectarTipoYDescripcion(campos);
+        motivo = m;
+      } else if (nombreNuevo) {
+        estado = "OK";
+      } else {
+        estado = "REVISAR";
+        motivo = diagnosticar(campos);
+      }
+
+      resultadosGlobales.push({
+        nombreOriginal: file.name,
+        nombreNuevo: nombreNuevo === "__IGNORAR__" ? null : nombreNuevo,
+        estado, motivo,
+        archivoBlob: file
+      });
+    } catch (err) {
+      resultadosGlobales.push({
+        nombreOriginal: file.name,
+        nombreNuevo: null,
+        estado: "ERROR",
+        motivo: err.message,
+        archivoBlob: file
+      });
+    }
+  }
+
+  progressDiv.classList.add("hidden");
+  mostrarResultados();
+}
+
+function mostrarResultados() {
+  let ok = 0, rev = 0, ign = 0, err = 0;
+  resultsTable.innerHTML = "";
+
+  for (const r of resultadosGlobales) {
+    let clase, etiqueta, destino;
+    if (r.estado === "OK") {
+      clase = "ok"; etiqueta = "Renombrado";
+      destino = escapeHtml(r.nombreNuevo);
+      ok++;
+    } else if (r.estado === "REVISAR") {
+      clase = "rev"; etiqueta = "Revisar a mano";
+      destino = escapeHtml(r.motivo);
+      rev++;
+    } else if (r.estado === "IGNORADO") {
+      clase = "ign"; etiqueta = "No se renombra";
+      destino = escapeHtml(r.motivo);
+      ign++;
+    } else {
+      clase = "err"; etiqueta = "Error";
+      destino = escapeHtml(r.motivo);
+      err++;
+    }
+
+    resultsTable.insertAdjacentHTML("beforeend", `
+      <tr class="${clase}">
+        <td><span class="pill ${clase}">${etiqueta}</span></td>
+        <td class="origen">${escapeHtml(r.nombreOriginal)}</td>
+        <td class="flecha">→</td>
+        <td class="destino">${destino}</td>
+        <td class="ver-celda"><button class="ver-btn" data-idx="${resultadosGlobales.indexOf(r)}">👁 Ver</button></td>
+      </tr>
+    `);
+  }
+
+  document.getElementById("numOk").textContent = ok;
+  document.getElementById("numRev").textContent = rev;
+  document.getElementById("numIgn").textContent = ign;
+  document.getElementById("numErr").textContent = err;
+
+  // Si no hay nada que guardar, deshabilitar botón
+  saveBtn.disabled = resultadosGlobales.length === 0;
+
+  resultsDiv.classList.remove("hidden");
+}
+
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s || "";
+  return div.innerHTML;
+}
+
+// =============================================================================
+// Visor modal de PDFs
+// =============================================================================
+
+const pdfOverlay = document.getElementById("pdfOverlay");
+const pdfIframe = document.getElementById("pdfIframe");
+const pdfTituloOriginal = document.getElementById("pdfTituloOriginal");
+const pdfTituloNuevo = document.getElementById("pdfTituloNuevo");
+const pdfCerrar = document.getElementById("pdfCerrar");
+
+let urlActualPDF = null;
+
+function abrirPDF(idx) {
+  const r = resultadosGlobales[idx];
+  if (!r) return;
+
+  // Liberar la URL anterior si la había
+  if (urlActualPDF) URL.revokeObjectURL(urlActualPDF);
+  urlActualPDF = URL.createObjectURL(r.archivoBlob);
+
+  pdfTituloOriginal.textContent = `Original: ${r.nombreOriginal}`;
+  if (r.estado === "OK") {
+    pdfTituloNuevo.textContent = `→ ${r.nombreNuevo}`;
+    pdfTituloNuevo.classList.remove("muted");
+  } else {
+    pdfTituloNuevo.textContent = `→ ${r.motivo || "(no se renombra)"}`;
+    pdfTituloNuevo.classList.add("muted");
+  }
+
+  pdfIframe.src = urlActualPDF;
+  pdfOverlay.classList.add("show");
+}
+
+function cerrarPDF() {
+  pdfOverlay.classList.remove("show");
+  pdfIframe.src = "about:blank";
+  if (urlActualPDF) {
+    URL.revokeObjectURL(urlActualPDF);
+    urlActualPDF = null;
+  }
+}
+
+pdfCerrar.addEventListener("click", cerrarPDF);
+pdfOverlay.addEventListener("click", e => {
+  if (e.target === pdfOverlay) cerrarPDF();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && pdfOverlay.classList.contains("show")) cerrarPDF();
+});
+
+// Delegación de eventos: botones "Ver" en la tabla
+resultsTable.addEventListener("click", e => {
+  const btn = e.target.closest(".ver-btn");
+  if (btn) {
+    const idx = parseInt(btn.dataset.idx, 10);
+    abrirPDF(idx);
+  }
+});
+</script>
+</body>
+</html>
