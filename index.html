@@ -1142,45 +1142,61 @@ saveBtn.addEventListener("click", async () => {
     const carpetaNoSirven = await carpetaDestino.getDirectoryHandle("PDFs_no_sirven", { create: true });
 
     let guardadosOk = 0, guardadosNoSirven = 0;
+    const errores = [];
 
     for (const r of resultadosGlobales) {
-      let carpetaActual, nombre;
-      if (r.estado === "OK") {
-        carpetaActual = carpetaRenombrados;
-        nombre = r.nombreNuevo;
-        guardadosOk++;
-      } else {
-        carpetaActual = carpetaNoSirven;
-        nombre = r.nombreOriginal;
-        guardadosNoSirven++;
-      }
+      const esOk = r.estado === "OK";
+      const carpetaActual = esOk ? carpetaRenombrados : carpetaNoSirven;
+      const nombre = esOk ? r.nombreNuevo : r.nombreOriginal;
 
-      // Si ya existe un fichero con ese nombre, añadir sufijo (2), (3)...
-      let nombreFinal = nombre;
-      let sufijo = 2;
-      while (await archivoExiste(carpetaActual, nombreFinal)) {
-        const punto = nombre.lastIndexOf(".");
-        nombreFinal = punto > 0
-          ? `${nombre.slice(0, punto)} (${sufijo})${nombre.slice(punto)}`
-          : `${nombre} (${sufijo})`;
-        sufijo++;
-      }
+      try {
+        // Si ya existe un fichero con ese nombre, añadir sufijo (2), (3)...
+        let nombreFinal = nombre;
+        let sufijo = 2;
+        while (await archivoExiste(carpetaActual, nombreFinal)) {
+          const punto = nombre.lastIndexOf(".");
+          nombreFinal = punto > 0
+            ? `${nombre.slice(0, punto)} (${sufijo})${nombre.slice(punto)}`
+            : `${nombre} (${sufijo})`;
+          sufijo++;
+        }
 
-      const fileHandle = await carpetaActual.getFileHandle(nombreFinal, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(r.archivoBlob);
-      await writable.close();
+        const fileHandle = await carpetaActual.getFileHandle(nombreFinal, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(r.archivoBlob);
+        await writable.close();
+
+        if (esOk) guardadosOk++; else guardadosNoSirven++;
+      } catch (err) {
+        console.error("[renombrador] Error guardando", r.nombreOriginal, "->", nombre, err);
+        errores.push({
+          original: r.nombreOriginal,
+          nombre,
+          mensaje: err.message || err.name || String(err),
+        });
+      }
     }
 
-    saveStatus.className = "save-status success";
-    saveStatus.innerHTML = `✓ Guardados <b>${guardadosOk}</b> PDFs en <code>PDFs_renombrados/</code> y <b>${guardadosNoSirven}</b> en <code>PDFs_no_sirven/</code> dentro de <b>${escapeHtml(carpetaDestino.name)}</b>.`;
+    const totalGuardados = guardadosOk + guardadosNoSirven;
+    if (errores.length === 0) {
+      saveStatus.className = "save-status success";
+      saveStatus.innerHTML = `✓ Guardados <b>${guardadosOk}</b> PDFs en <code>PDFs_renombrados/</code> y <b>${guardadosNoSirven}</b> en <code>PDFs_no_sirven/</code> dentro de <b>${escapeHtml(carpetaDestino.name)}</b>.`;
+    } else {
+      const detalle = errores.slice(0, 5).map(e =>
+        `<li><code>${escapeHtml(e.nombre)}</code> — ${escapeHtml(e.mensaje)}</li>`
+      ).join("");
+      const masTexto = errores.length > 5 ? ` (y ${errores.length - 5} más, revisa la consola del navegador)` : "";
+      saveStatus.className = "save-status error";
+      saveStatus.innerHTML = `Guardados <b>${totalGuardados}</b> de ${resultadosGlobales.length}. Fallaron <b>${errores.length}</b>${masTexto}:<ul style="margin:6px 0 0 0;text-align:left">${detalle}</ul>`;
+    }
   } catch (err) {
     if (err.name === "AbortError") {
       saveStatus.textContent = "";
       return;
     }
+    console.error("[renombrador] Error global al guardar", err);
     saveStatus.className = "save-status error";
-    saveStatus.textContent = `Error al guardar: ${err.message}`;
+    saveStatus.textContent = `Error al guardar: ${err.message || err.name}`;
   }
 });
 
