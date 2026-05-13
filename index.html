@@ -295,6 +295,19 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 // =============================================================================
 
 function detectarFormato(texto) {
+  // Formatos "informe" del Santander — son justificantes largos sin
+  // "Detalle del movimiento". Comprobamos sus anclas antes que las otras.
+  if (/ORDEN\s+DE\s+TRANSFERENCIA/i.test(texto)
+      && /TRANSFERENCIAS\s+(RECIBIDAS|EMITIDAS)/i.test(texto)) {
+    return "santander-orden";
+  }
+  if (/ADEUDO\s+POR\s+DOMICILIACI[OÓ]N/i.test(texto)) {
+    return "santander-adeudo";
+  }
+  // CaixaBank: transferencia desde el extranjero en formato justificante
+  if (/TRANSFERENCIA\s+A\s+SU\s+FAVOR\s+DE\s+NO\s+RESIDENTE/i.test(texto)) {
+    return "caixa-no-residente";
+  }
   if (texto.includes("Detalle del movimiento")) {
     if (texto.includes("Tipo de Operación") || texto.includes("Tipo de movimiento")) {
       return "santander";
@@ -364,19 +377,31 @@ function extraerCamposDetalle(texto) {
     campos.movimiento_titular = primera.trim();
   }
 
+  // Concepto distintivo para diferenciar pagos colisionantes. En el formato
+  // CaixaBank "detalle" no hay un campo CONCEPTO humano, pero algunas
+  // transferencias recibidas traen un texto identificativo en
+  // "Concepto específico" o en el "movimiento_titular". No se aplica a
+  // recibos domiciliados (donde el acreedor ya identifica).
+  if (campos.concepto_especifico && /^[A-ZÁÉÍÓÚÑ0-9].*[a-z]/.test(campos.concepto_especifico)) {
+    // Solo si parece texto humano (mezcla mayúsculas/minúsculas), no códigos
+    campos.concepto_distintivo = campos.concepto_especifico;
+  }
+
   return campos;
 }
 
 function extraerCamposDomiciliacion(texto) {
   const campos = { texto, formato: "domiciliacion" };
 
-  const fechas = [...texto.matchAll(/\b(\d{2})\.(\d{2})\.(\d{2})\b/g)];
+  // El formato CaixaBank "Domiciliación de pagos" suele permitir fechas con
+  // día de un solo dígito (" 8.05.26", " 4.05.26"). Aceptamos 1-2 dígitos.
+  const fechas = [...texto.matchAll(/\b(\d{1,2})\.(\d{2})\.(\d{2})\b/g)];
   if (fechas.length >= 2) {
     const [, d, mo, y] = fechas[1];
-    campos.fecha_str = `20${y}${mo}${d}`;
+    campos.fecha_str = `20${y}${mo}${String(d).padStart(2, "0")}`;
   } else if (fechas.length === 1) {
     const [, d, mo, y] = fechas[0];
-    campos.fecha_str = `20${y}${mo}${d}`;
+    campos.fecha_str = `20${y}${mo}${String(d).padStart(2, "0")}`;
   }
 
   const importes = [...texto.matchAll(/\b([\d.]+,\d{2})\b/g)];
@@ -385,9 +410,39 @@ function extraerCamposDomiciliacion(texto) {
     campos.importe_abs = importes[0][1];
   }
 
-  const m = texto.match(/\d{2}\.\d{2}\.\d{2}\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .,&\-']+?)\s+RETAMAR/i);
+  // Entidad ordenante. pdf.js (a diferencia de pdftotext-layout) suele juntar
+  // las columnas "Entidad ordenante" y "Titular" en la misma línea, así que
+  // capturamos toda la línea tras "Fecha Valor" y post-procesamos.
+  let m = texto.match(/Fecha\s+Valor[^\n]*\n[^\n]*?\d{1,2}\.\d{2}\.\d{2}\s+([^\n]+)/i);
+  if (!m) {
+    // Fallback: ancla original con RETAMAR como límite
+    m = texto.match(/\d{1,2}\.\d{2}\.\d{2}\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .,&\-']+?)\s+RETAMAR/i);
+  }
   if (m) {
-    campos.entidad_ordenante = m[1].trim();
+    let bruto = m[1].trim();
+    // Si aparece "RETAMAR" en la línea, es el titular: cortar ahí.
+    const idxRetamar = bruto.search(/\bRETAMAR\b/i);
+    if (idxRetamar > 0) {
+      bruto = bruto.slice(0, idxRetamar).replace(/[\s,]+$/, "").trim();
+    } else {
+      // Sin RETAMAR, asumimos titular humano: 3+ palabras consecutivas
+      // en MAYÚSCULAS de 3+ letras al final (nombre + 2 apellidos).
+      bruto = bruto
+        .replace(/\s+[A-ZÁÉÍÓÚÑ]{3,}(?:\s+[A-ZÁÉÍÓÚÑ]{3,}){2,}$/, "")
+        .trim();
+    }
+    if (bruto) campos.entidad_ordenante = bruto;
+  }
+
+  // Concepto distintivo: la línea de "concepto específico" del recibo SEPA
+  // (entre la línea con el ID SEPA y la frase "En cumplimiento con la normativa").
+  // Ejemplos: "MOV.676133100.MAY", "TARJETA IBERIA CARDS ... MES DE MAYO".
+  m = texto.match(/(?:ES\d{2,}[A-Z0-9]+|IE\d+[A-Z0-9]+)\s*\n\s*([^\n]+?)\s*\n/);
+  if (m) {
+    const cd = m[1].trim();
+    if (cd && cd.length < 120 && !/cumplimiento|para m[aá]s/i.test(cd)) {
+      campos.concepto_distintivo = cd;
+    }
   }
 
   return campos;
@@ -449,6 +504,162 @@ function extraerCamposSantander(texto) {
     campos.concepto_efectivo = m[1].trim();
   }
 
+  // Concepto distintivo: lo que la familia/empresa escribe tras "CONCEPTO"
+  // en una transferencia, o tras "CONCEPTO:" dentro de un ingreso en cajero.
+  // Sirve para diferenciar dos pagos con misma fecha+importe+contraparte.
+  if (campos.concepto_completo) {
+    const cc = campos.concepto_completo;
+    // Caso INGRESO: "...CONCEPTO: MAYO Y RECIBO UNICO. ORDENANTE: ALEJANDRO..."
+    let mc = cc.match(/CONCEPTO\s*:\s*(.+?)\s*\.\s*ORDENANTE/i);
+    // Caso transferencia: "...CONCEPTO 9636 javier sada triana"
+    if (!mc) mc = cc.match(/\bCONCEPTO\s*:?\s*(.+)$/i);
+    if (mc) campos.concepto_distintivo = mc[1].trim();
+  }
+
+  return campos;
+}
+
+// Justificante largo de Santander con "ORDEN DE TRANSFERENCIA".
+// Recibidas: contiene "TRANSFERENCIAS RECIBIDAS" y un bloque ORDENANTE/IMPORTE/BENEFICIARIO.
+// Emitidas:  contiene "TRANSFERENCIAS EMITIDAS" y la entidad va a la derecha (BENEFICIARIO).
+function extraerCamposSantanderOrden(texto) {
+  const campos = { texto, formato: "santander-orden" };
+
+  // Signo según sea recibida o emitida
+  campos.es_recibida = /TRANSFERENCIAS\s+RECIBIDAS/i.test(texto);
+  campos.importe_signo = campos.es_recibida ? "+" : "-";
+
+  // Fecha: usar "Fecha operación: DD-MM-YYYY" (más fiable que "Fecha de envío").
+  let m = texto.match(/Fecha\s+operaci[oó]n:?\s*(\d{2})-(\d{2})-(\d{4})/i);
+  if (m) {
+    campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+  } else {
+    // Fallback: "Fecha de envío: DD-MM-YYYY"
+    m = texto.match(/Fecha\s+de\s+env[ií]o:?\s*(\d{2})-(\d{2})-(\d{4})/i);
+    if (m) campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+  }
+
+  // Importe: para recibidas "Importe origen: X,YY EUR"; para emitidas "Importe ordenado: X,YY EUR".
+  m = texto.match(/Importe\s+(?:origen|ordenado)\s*:?\s*([\d.]+,\d{2})\s*EUR/i);
+  if (m) {
+    campos.importe_abs = m[1];
+  }
+
+  // Contraparte: para recibidas el ORDENANTE; para emitidas el BENEFICIARIO.
+  // En pdf.js el orden de items es impredecible, por lo que usamos anclas
+  // textuales conocidas y aceptamos varios casos.
+  if (campos.es_recibida) {
+    // "ORDENANTE\nNOMBRE\n..." o "ORDENANTE NOMBRE >> X EUR"
+    m = texto.match(/ORDENANTE[\s\S]{0,40}?\n\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s*\n|\s{2,}|>>)/);
+    if (!m) {
+      m = texto.match(/ORDENANTE\s+([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s{2,}|>>|\s+IMPORTE)/);
+    }
+    if (m) campos.contraparte = m[1].trim();
+  } else {
+    // "BENEFICIARIO\nNOMBRE..." o ">> NOMBRE"
+    m = texto.match(/BENEFICIARIO[\s\S]{0,40}?>>\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s*\n|\s{2,}|POR\s+CUENTA)/);
+    if (!m) {
+      m = texto.match(/BENEFICIARIO[\s\S]{0,40}?\n\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s*\n|\s{2,})/);
+    }
+    if (m) campos.contraparte = m[1].trim();
+  }
+
+  // Concepto distintivo: bloque "CONCEPTO:\n<texto>" del justificante.
+  m = texto.match(/CONCEPTO\s*:\s*([^\n]+(?:\n[^\n]+)?)/i);
+  if (m) {
+    let txt = m[1].replace(/\s+/g, " ").trim();
+    txt = recortarPieDePagina(txt);
+    if (txt && !/^-+$/.test(txt)) campos.concepto_distintivo = txt;
+  }
+
+  return campos;
+}
+
+// Recorta el pie de página del banco y referencias internas que pdf.js
+// puede colar en el bloque CONCEPTO al normalizar líneas. Si el corte sería
+// total (el pie va antes que el concepto real), busca el concepto útil que
+// pueda aparecer DESPUÉS del pie y se queda con esa cola.
+function recortarPieDePagina(s) {
+  let t = s;
+  const cortes = [
+    /\b(?:Sociedades|N\.?\s*I\.?\s*F\.?|BIC[:\s]|Inscrita)\b/i,
+    /\bPL\d{4}\b/,
+    /\bNuestra\s+Ref/i,
+    /\bRef[aª]?\s+Origen/i,
+    /\bRefer\./i,
+    /\bN[ºo]\s+de\s+Recibo/i,
+    /\bEsquema\s*:/i,
+    /\bADEUDAMOS\b/i,
+  ];
+  for (const re of cortes) {
+    const m = t.match(re);
+    if (!m) continue;
+    if (m.index > 0) {
+      t = t.slice(0, m.index);
+    } else {
+      // El pie ocupa el inicio; intenta capturar concepto real al final
+      // (típicamente el último token alfanumérico no-banco).
+      const cola = t.slice(m.index + m[0].length);
+      const tokens = cola.split(/\s+/).filter(Boolean);
+      // El último token significativo suele ser el concepto real (ej. PROVISION, 0067-2026)
+      if (tokens.length > 0) t = tokens[tokens.length - 1];
+      else t = "";
+    }
+  }
+  return t.trim().replace(/[\s.,;:-]+$/, "");
+}
+
+// Recibo domiciliado del Santander con "ADEUDO POR DOMICILIACIÓN".
+function extraerCamposSantanderAdeudo(texto) {
+  const campos = { texto, formato: "santander-adeudo" };
+  campos.importe_signo = "-";
+
+  // Fecha valor: DD-MM-YYYY
+  let m = texto.match(/Fecha\s+valor:?\s*(\d{2})-(\d{2})-(\d{4})/i);
+  if (m) campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+
+  // Importe de operación: X,YY
+  m = texto.match(/Importe\s+de\s+operaci[oó]n:?\s*([\d.]+,\d{2})/i);
+  if (m) campos.importe_abs = m[1];
+
+  // EMISOR: la etiqueta "EMISOR" aparece como cabecera de columna ("EMISOR  IMPORTE  TITULAR").
+  // El valor real está en la línea siguiente, así que saltamos al \n.
+  m = texto.match(/EMISOR\b[^\n]*\n\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'()/]+?)(?=\s+>>|\s{2,}|\n|ID\s+Emisor|Moneda)/);
+  if (m) campos.emisor = m[1].trim();
+
+  // Concepto distintivo: bloque "CONCEPTO:\n<texto>"
+  m = texto.match(/CONCEPTO\s*:\s*([^\n]+)/i);
+  if (m) {
+    let txt = m[1].replace(/\s+/g, " ").trim();
+    txt = recortarPieDePagina(txt);
+    if (txt && !/^-+$/.test(txt)) campos.concepto_distintivo = txt;
+  }
+
+  return campos;
+}
+
+// CaixaBank: transferencia recibida del extranjero en formato justificante.
+function extraerCamposCaixaNoResidente(texto) {
+  const campos = { texto, formato: "caixa-no-residente" };
+  campos.importe_signo = "+";
+
+  // Fecha: la primera DD-MM-YY del bloque (Fecha\nDD-MM-YY ...)
+  let m = texto.match(/\b(\d{2})-(\d{2})-(\d{2})\b/);
+  if (m) campos.fecha_str = `20${m[3]}${m[2]}${m[1]}`;
+
+  // Importe: aparece como "X,YY" en una zona aparte; no hay "EUR" cerca.
+  // Buscamos el primer importe con formato europeo después de "Importe".
+  m = texto.match(/Importe[\s\S]{0,80}?([\d.]+,\d{2})/i);
+  if (m) campos.importe_abs = m[1];
+
+  // CONCEPTO (preferente sobre ORDENANTE, según convención del usuario)
+  m = texto.match(/CONCEPTO\s*:?\s*([A-ZÁÉÍÓÚÑa-záéíóúñ0-9][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s{2,}|\n|REFER\.)/);
+  if (m) campos.concepto = m[1].trim();
+
+  // ORDENANTE como fallback
+  m = texto.match(/ORDENANTE\s*:?\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s{2,}|\n|BENEFICIARIO)/);
+  if (m) campos.ordenante = m[1].trim();
+
   return campos;
 }
 
@@ -457,12 +668,59 @@ function extraerCampos(texto) {
   if (formato === "detalle") return extraerCamposDetalle(texto);
   if (formato === "domiciliacion") return extraerCamposDomiciliacion(texto);
   if (formato === "santander") return extraerCamposSantander(texto);
+  if (formato === "santander-orden") return extraerCamposSantanderOrden(texto);
+  if (formato === "santander-adeudo") return extraerCamposSantanderAdeudo(texto);
+  if (formato === "caixa-no-residente") return extraerCamposCaixaNoResidente(texto);
   return { texto, formato: "desconocido" };
 }
 
 function limpiarNombreOrdenante(nombre) {
   const m = nombre.match(/^\d+-(.+)$/);
   return m ? m[1].trim() : nombre.trim();
+}
+
+// Recorta paréntesis, comas y sufijos legales habituales para que las razones
+// sociales largas queden manejables en el nombre de archivo.
+// Ej: "PayPal (Europe) S.a r.l. et Cie, S.C.A." -> "PayPal"
+//     "AMERICAN EXPRESS EUROPE S.A.U."           -> "AMERICAN EXPRESS"
+//     "ASISA, ASISTENCIA SANITARIA COLECTIVOS"   -> "ASISA"
+//     "TD SYNNEX Spain S.L.U."                    -> "TD SYNNEX"
+//     "Google Ireland Limited"                    -> "Google Ireland Limited" (Limited NO se recorta)
+function limpiarRazonSocial(nombre) {
+  let n = (nombre || "").trim();
+  // 1) Cortar en el primer paréntesis abierto
+  const parIdx = n.indexOf("(");
+  if (parIdx > 0) n = n.slice(0, parIdx).trim();
+  // 2) Cortar en la primera coma
+  const comaIdx = n.indexOf(",");
+  if (comaIdx > 0) n = n.slice(0, comaIdx).trim();
+  // 3) Recortar iterativamente sufijos legales y geográficos al final
+  const sufijos = [
+    /\s+S\.?\s*A\.?\s*U\.?$/i,
+    /\s+S\.?\s*L\.?\s*U\.?$/i,
+    /\s+S\.?\s*L\.?\s*P\.?$/i,
+    /\s+S\.?\s*L\.?$/i,
+    /\s+S\.?\s*A\.?$/i,
+    /\s+S\.?\s*C\.?\s*A\.?$/i,
+    /\s+B\.?\s*V\.?$/i,
+    /\s+S\.?\s*a\s*r\.?\s*l\.?$/i,
+    /\s+et\s+Cie$/i,
+    /\s+Sucurs(?:al)?$/i,
+    /\s+EUROPE$/i,
+    /\s+Spain$/i,
+    /\s+ESPA[NÑ]A$/i,
+  ];
+  let cambiado = true;
+  while (cambiado) {
+    cambiado = false;
+    for (const re of sufijos) {
+      if (re.test(n)) {
+        n = n.replace(re, "").trim();
+        cambiado = true;
+      }
+    }
+  }
+  return n;
 }
 
 // =============================================================================
@@ -493,11 +751,25 @@ function detectarTipoSantander(campos) {
   // No usamos "tipo_operacion" porque pdf.js descoloca los items y el campo
   // se extrae mal. Detectamos el tipo por palabras clave del concepto.
 
-  // 2) Recibo domiciliado: concepto empieza por "RECIBO ..."
-  // Ej: "RECIBO SOLRED Nº RECIBO 0049 5185 ..."
-  let m = concepto.match(/^RECIBO\s+([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .&\-']*?)(?:\s+N[ºo]\s|\s+\d|\s+REF\.|$)/i);
+  // 2a) Ingreso anónimo en cajero con ordenante identificado
+  //  Ej: "INGRESO ANONIMO EN CAJERO AUTOMATICO 004970810000 EL 13/05/2026 A LAS 09:54.
+  //       CONCEPTO: MAYO Y RECIBO UNICO. ORDENANTE: ALEJANDRO GUTIERREZ. .."
+  if (/INGRESO\s+AN[OÓ]NIMO\s+EN\s+CAJERO/i.test(concepto)) {
+    const mOrd = concepto.match(/ORDENANTE\s*:?\s*([^.]+?)\s*\.?\s*\.?\.*\s*$/i)
+      || concepto.match(/ORDENANTE\s*:?\s*(.+?)\s*\.\s*\./i);
+    if (mOrd) {
+      return ["Ingreso efectivo de", mOrd[1].trim()];
+    }
+    return ["Ingreso efectivo", ""];
+  }
+
+  // 2b) Recibo domiciliado: concepto empieza por "RECIBO ..."
+  //  Ej: "RECIBO SOLRED Nº RECIBO 0049 5185 ..."
+  //  Ej: "RECIBO PayPal (Europe) S.a r.l. et Cie, S.C.A. Nº RECIBO 0049 ..."
+  //  Capturamos hasta el primer separador conocido (Nº RECIBO, REF., números largos).
+  let m = concepto.match(/^RECIBO\s+(.+?)(?:\s+N[ºo]\s*RECIBO|\s+N[ºo]\s|\s+REF\.|\s+\d{4,})/i);
   if (m) {
-    return ["Rec de", m[1].trim()];
+    return ["Rec de", limpiarRazonSocial(m[1])];
   }
 
   // 3) Comisiones: concepto empieza por "COMISION POR ..."
@@ -526,17 +798,17 @@ function detectarTipoSantander(campos) {
   }
 
   // 5) Transferencia emitida → "Trf a [Nombre]"
-  // Ej: "TRANSFERENCIA A FAVOR DE Rosario Jimenez Cabrera CONCEPTO: ..."
-  m = concepto.match(/TRANSFERENCIA\s+A\s+FAVOR\s+DE\s+(.+?)(?:\s+CONCEPTO\s*:|$)/i);
+  //  Acepta "TRANSFERENCIA A FAVOR DE" y "TRANSFERENCIA INMEDIATA A FAVOR DE"
+  m = concepto.match(/TRANSFERENCIA(?:\s+INMEDIATA)?\s+A\s+FAVOR\s+DE\s+(.+?)(?:\s+CONCEPTO\s*:?|$)/i);
   if (m) {
-    return ["Trf a", m[1].trim()];
+    return ["Trf a", limpiarRazonSocial(m[1])];
   }
 
   // 6) Transferencia recibida → "Trf de [NOMBRE]"
-  // Ej: "TRANSFERENCIA DE CRISTINA LLANEZA TUERO, CONCEPTO ..."
-  m = concepto.match(/TRANSFERENCIA\s+DE\s+(.+?)(?:[,.]|\s+CONCEPTO|$)/i);
+  //  Acepta "TRANSFERENCIA DE" y "TRANSFERENCIA INMEDIATA DE"
+  m = concepto.match(/TRANSFERENCIA(?:\s+INMEDIATA)?\s+DE\s+(.+?)(?:[,.]|\s+CONCEPTO|$)/i);
   if (m) {
-    return ["Trf de", m[1].trim()];
+    return ["Trf de", limpiarRazonSocial(m[1])];
   }
 
   return [null, null];
@@ -550,8 +822,25 @@ function detectarTipoYDescripcion(campos) {
     return detectarTipoSantander(campos);
   }
 
+  if (formato === "santander-orden") {
+    const nombre = limpiarRazonSocial(campos.contraparte || "");
+    if (!nombre) return [null, null];
+    return [campos.es_recibida ? "Trf de" : "Trf a", nombre];
+  }
+
+  if (formato === "santander-adeudo") {
+    const nombre = limpiarRazonSocial(campos.emisor || "");
+    return nombre ? ["Rec de", nombre] : [null, null];
+  }
+
+  if (formato === "caixa-no-residente") {
+    // Decisión JJB: usar CONCEPTO (PLAYTOMIC) en lugar de ORDENANTE (STRIPE)
+    const desc = limpiarRazonSocial(campos.concepto || campos.ordenante || "");
+    return desc ? ["Trf de", desc] : [null, null];
+  }
+
   if (formato === "domiciliacion") {
-    const entidad = (campos.entidad_ordenante || "").trim();
+    const entidad = limpiarRazonSocial(campos.entidad_ordenante || "");
     return entidad ? ["Rec de", entidad] : [null, null];
   }
 
@@ -589,7 +878,7 @@ function detectarTipoYDescripcion(campos) {
   }
 
   if (signo === "-" && acreedor && !acreedor.includes("TGSS")) {
-    return ["Rec de", acreedor.trim()];
+    return ["Rec de", limpiarRazonSocial(acreedor)];
   }
 
   return [null, null];
@@ -597,6 +886,16 @@ function detectarTipoYDescripcion(campos) {
 
 function formatearImporte(importeAbs) {
   return importeAbs.endsWith(",00") ? importeAbs.slice(0, -3) : importeAbs;
+}
+
+// Caracteres no válidos en nombres de archivo (Windows/macOS) y trim duro.
+// "/" y "\" se reemplazan por "-" para no perder la información (p.ej. "0067/2026").
+function sanearNombre(s) {
+  return (s || "")
+    .replace(/[\\/]/g, "-")
+    .replace(/[:*?"<>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function construirNombre(campos) {
@@ -607,10 +906,23 @@ function construirNombre(campos) {
   if (tipo === "__IGNORAR__") return "__IGNORAR__";
   if (tipo === null) return null;
   const importe = formatearImporte(campos.importe_abs);
-  if (descripcion) {
-    return `${campos.fecha_str} ${tipo} ${descripcion} ${importe}€.pdf`;
+
+  // Concepto distintivo para diferenciar pagos colisionantes (misma familia,
+  // mismo importe, mismo día). Lo añadimos entre paréntesis cuando esté
+  // disponible y no esté ya repetido en la descripción.
+  let extra = "";
+  let cd = sanearNombre(campos.concepto_distintivo || "");
+  if (cd) {
+    // Truncar conceptos largos
+    if (cd.length > 80) cd = cd.slice(0, 80).trim();
+    // Evitar duplicación con la descripción (case-insensitive)
+    const desc = (descripcion || "").toLowerCase();
+    if (desc && desc.includes(cd.toLowerCase())) cd = "";
   }
-  return `${campos.fecha_str} ${tipo} ${importe}€.pdf`;
+  if (cd) extra = ` (${cd})`;
+
+  const desc = descripcion ? ` ${sanearNombre(descripcion)}` : "";
+  return `${campos.fecha_str} ${tipo}${desc}${extra} ${importe}€.pdf`;
 }
 
 function diagnosticar(campos) {
