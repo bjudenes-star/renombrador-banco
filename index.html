@@ -460,25 +460,32 @@ function extraerCamposSantander(texto) {
 
   // Fecha:
   // - Subformato efectivo: "Fecha: 2026-05-05"
-  // - Subformato detalle: el PDF tiene tres fechas en orden:
-  //     1) "Fecha y hora de la petición: 06/05/2026 ..."  ← cabecera, IGNORAR
-  //     2) "Fecha Operación 05/05/2026"  ← LA QUE QUEREMOS
-  //     3) "Fecha Valor 05/05/2026"
-  //   Como pdf.js descoloca los items, no podemos buscar después de la
-  //   etiqueta. Cogemos la segunda fecha DD/MM/YYYY que aparezca en el texto.
+  // - Subformato detalle: el PDF tiene tres fechas:
+  //     1) "Fecha y hora de la petición: 06/05/2026 10:40:51"  ← cabecera, IGNORAR
+  //     2) "Fecha Operación 12/05/2026"  ← LA QUE QUEREMOS (fecha valor ≠ operación)
+  //     3) "Fecha Valor 11/05/2026"
+  //   Buscamos la fecha que aparece tras la etiqueta "Fecha Operación".
+  //   Esto es más fiable que contar fechas, porque pdf.js a veces fragmenta
+  //   "13/05/2026 10:40:51" (la de petición) y la regex la pierde, haciendo
+  //   que fechas[1] termine siendo la Fecha Valor en lugar de la Operación.
   let m;
   if (campos.subformato === "efectivo") {
     m = texto.match(/Fecha:\s*(\d{4})-(\d{2})-(\d{2})/);
     if (m) campos.fecha_str = `${m[1]}${m[2]}${m[3]}`;
   } else {
-    const fechas = [...texto.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)];
-    if (fechas.length >= 2) {
-      // La 1ª es la fecha de la petición (cabecera). La 2ª es Fecha Operación.
-      const [, d, mo, y] = fechas[1];
-      campos.fecha_str = `${y}${mo}${d}`;
-    } else if (fechas.length === 1) {
-      const [, d, mo, y] = fechas[0];
-      campos.fecha_str = `${y}${mo}${d}`;
+    m = texto.match(/Fecha\s+Operaci[oó]n[\s\S]*?(\d{2})\/(\d{2})\/(\d{4})/i);
+    if (m) {
+      campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+    } else {
+      // Fallback: segunda fecha del documento (la 1ª suele ser la petición).
+      const fechas = [...texto.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)];
+      if (fechas.length >= 2) {
+        const [, d, mo, y] = fechas[1];
+        campos.fecha_str = `${y}${mo}${d}`;
+      } else if (fechas.length === 1) {
+        const [, d, mo, y] = fechas[0];
+        campos.fecha_str = `${y}${mo}${d}`;
+      }
     }
   }
 
