@@ -140,13 +140,24 @@
   .save-status.error { background: var(--red-bg); color: var(--red); }
   .save-status:empty { display: none; }
 
-  .ver-celda { width: 80px; text-align: right; }
-  .ver-btn {
+  .ver-celda { width: 140px; text-align: right; white-space: nowrap; }
+  .ver-btn, .edit-btn, .edit-ok, .edit-cancel {
     padding: 4px 10px; font-size: 12px; border-radius: 6px;
     background: white; border: 1px solid var(--border); cursor: pointer;
     color: var(--muted); transition: all 0.1s;
   }
-  .ver-btn:hover { border-color: var(--accent); color: var(--accent); background: #f0f6ff; }
+  .ver-btn:hover, .edit-btn:hover { border-color: var(--accent); color: var(--accent); background: #f0f6ff; }
+  .edit-btn { margin-right: 4px; }
+  .edit-ok { border-color: var(--green); color: var(--green); }
+  .edit-ok:hover { background: var(--green-bg); }
+  .edit-cancel { margin-left: 4px; }
+  .edit-cancel:hover { border-color: var(--red); color: var(--red); }
+  .edit-input {
+    width: 100%; padding: 6px 8px; border: 1px solid var(--accent);
+    border-radius: 6px; font-size: 14px; font-family: inherit;
+    background: #f0f6ff;
+  }
+  .edit-input:focus { outline: none; box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.2); }
 
   /* Visor modal de PDFs */
   .pdf-overlay {
@@ -1322,13 +1333,17 @@ function mostrarResultados() {
       err++;
     }
 
+    const idxFila = resultadosGlobales.indexOf(r);
     resultsTable.insertAdjacentHTML("beforeend", `
-      <tr class="${clase}">
+      <tr class="${clase}" data-idx="${idxFila}">
         <td><span class="pill ${clase}">${etiqueta}</span></td>
         <td class="origen">${escapeHtml(r.nombreOriginal)}</td>
         <td class="flecha">→</td>
         <td class="destino">${destino}</td>
-        <td class="ver-celda"><button class="ver-btn" data-idx="${resultadosGlobales.indexOf(r)}">👁 Ver</button></td>
+        <td class="ver-celda">
+          <button class="edit-btn" data-idx="${idxFila}" title="Renombrar manualmente">✏️</button>
+          <button class="ver-btn" data-idx="${idxFila}">👁 Ver</button>
+        </td>
       </tr>
     `);
   }
@@ -1400,13 +1415,74 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape" && pdfOverlay.classList.contains("show")) cerrarPDF();
 });
 
-// Delegación de eventos: botones "Ver" en la tabla
-resultsTable.addEventListener("click", e => {
-  const btn = e.target.closest(".ver-btn");
-  if (btn) {
-    const idx = parseInt(btn.dataset.idx, 10);
-    abrirPDF(idx);
+// =============================================================================
+// Renombrado manual: permite editar el nombre propuesto antes de guardar.
+// Útil cuando el detector ha fallado (REVISAR/ERROR) o cuando Ricardo quiere
+// ajustar algo (ej. la fecha si difiere de Fecha Operación detectada).
+// =============================================================================
+
+function iniciarEdicion(idx) {
+  const r = resultadosGlobales[idx];
+  const row = resultsTable.querySelector(`tr[data-idx="${idx}"]`);
+  if (!row) return;
+  const destinoCell = row.querySelector(".destino");
+  const accionesCell = row.querySelector(".ver-celda");
+
+  // Valor inicial: el propuesto si era OK, si no el original sin .pdf.
+  const base = (r.estado === "OK" && r.nombreNuevo) ? r.nombreNuevo : r.nombreOriginal;
+  const inicial = base.replace(/\.pdf$/i, "");
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "edit-input";
+  input.value = inicial;
+  destinoCell.replaceChildren(input);
+
+  accionesCell.innerHTML = `
+    <button class="edit-ok" data-idx="${idx}" title="Aceptar (Enter)">✓ Aceptar</button>
+    <button class="edit-cancel" data-idx="${idx}" title="Cancelar (Esc)">✗</button>
+  `;
+
+  input.focus();
+  input.select();
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); confirmarEdicion(idx); }
+    else if (e.key === "Escape") { e.preventDefault(); mostrarResultados(); }
+  });
+}
+
+function confirmarEdicion(idx) {
+  const row = resultsTable.querySelector(`tr[data-idx="${idx}"]`);
+  if (!row) return;
+  const input = row.querySelector(".edit-input");
+  if (!input) return;
+  let nombre = sanearNombre(input.value);
+  if (!nombre) {
+    // Si queda vacío, revertimos sin tocar nada.
+    mostrarResultados();
+    return;
   }
+  if (!/\.pdf$/i.test(nombre)) nombre += ".pdf";
+  resultadosGlobales[idx].nombreNuevo = nombre;
+  resultadosGlobales[idx].estado = "OK";
+  resultadosGlobales[idx].motivo = "";
+  mostrarResultados();
+}
+
+// Delegación de eventos: botones "Ver", "Renombrar", "Aceptar" y "Cancelar"
+resultsTable.addEventListener("click", e => {
+  const verBtn = e.target.closest(".ver-btn");
+  if (verBtn) { abrirPDF(parseInt(verBtn.dataset.idx, 10)); return; }
+
+  const editBtn = e.target.closest(".edit-btn");
+  if (editBtn) { iniciarEdicion(parseInt(editBtn.dataset.idx, 10)); return; }
+
+  const okBtn = e.target.closest(".edit-ok");
+  if (okBtn) { confirmarEdicion(parseInt(okBtn.dataset.idx, 10)); return; }
+
+  const cancelBtn = e.target.closest(".edit-cancel");
+  if (cancelBtn) { mostrarResultados(); return; }
 });
 </script>
 </body>
