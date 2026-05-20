@@ -153,11 +153,24 @@
   .edit-cancel { margin-left: 4px; }
   .edit-cancel:hover { border-color: var(--red); color: var(--red); }
   .edit-input {
-    width: 100%; padding: 6px 8px; border: 1px solid var(--accent);
+    width: 100%; padding: 8px 10px; border: 1px solid var(--accent);
     border-radius: 6px; font-size: 14px; font-family: inherit;
-    background: #f0f6ff;
+    background: white;
   }
   .edit-input:focus { outline: none; box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.2); }
+  .edit-cell { background: #f0f6ff !important; padding: 14px 18px !important; }
+  .edit-row { display: flex; flex-direction: column; gap: 10px; }
+  .edit-label {
+    font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
+  }
+  .edit-original {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px; color: var(--text); font-weight: normal;
+    text-transform: none; letter-spacing: 0; word-break: break-all;
+  }
+  .edit-controls { display: flex; gap: 8px; align-items: center; }
+  .edit-controls .edit-input { flex: 1; min-width: 0; }
 
   /* Visor modal de PDFs */
   .pdf-overlay {
@@ -1425,24 +1438,29 @@ function iniciarEdicion(idx) {
   const r = resultadosGlobales[idx];
   const row = resultsTable.querySelector(`tr[data-idx="${idx}"]`);
   if (!row) return;
-  const destinoCell = row.querySelector(".destino");
-  const accionesCell = row.querySelector(".ver-celda");
 
   // Valor inicial: el propuesto si era OK, si no el original sin .pdf.
   const base = (r.estado === "OK" && r.nombreNuevo) ? r.nombreNuevo : r.nombreOriginal;
   const inicial = base.replace(/\.pdf$/i, "");
 
-  const input = document.createElement("input");
-  input.type = "text";
-  input.className = "edit-input";
-  input.value = inicial;
-  destinoCell.replaceChildren(input);
-
-  accionesCell.innerHTML = `
-    <button class="edit-ok" data-idx="${idx}" title="Aceptar (Enter)">✓ Aceptar</button>
-    <button class="edit-cancel" data-idx="${idx}" title="Cancelar (Esc)">✗</button>
+  // Reemplazamos la fila por una sola celda con colspan para que el input
+  // tenga todo el ancho de la tabla (la celda destino normal queda muy
+  // estrecha cuando el nombre original es largo).
+  row.innerHTML = `
+    <td colspan="5" class="edit-cell">
+      <div class="edit-row">
+        <div class="edit-label">Renombrar · <span class="edit-original"></span></div>
+        <div class="edit-controls">
+          <input type="text" class="edit-input">
+          <button class="edit-ok" data-idx="${idx}" title="Aceptar (Enter)">✓ Aceptar</button>
+          <button class="edit-cancel" data-idx="${idx}" title="Cancelar (Esc)">✗ Cancelar</button>
+        </div>
+      </div>
+    </td>
   `;
-
+  row.querySelector(".edit-original").textContent = r.nombreOriginal;
+  const input = row.querySelector(".edit-input");
+  input.value = inicial;
   input.focus();
   input.select();
 
