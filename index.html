@@ -332,6 +332,12 @@ function detectarFormato(texto) {
   if (/TRANSFERENCIA\s+A\s+SU\s+FAVOR\s+DE\s+NO\s+RESIDENTE/i.test(texto)) {
     return "caixa-no-residente";
   }
+  // CaixaBank: comprobante de transferencia recibida ("TRANSFERENCIA A SU
+  // FAVOR" / "ABONO"). Se comprueba después de la de no-residente para no
+  // pisarla.
+  if (/TRANSFERENCIA\s+A\s+SU\s+FAVOR/i.test(texto) && /\bABONO\b/.test(texto)) {
+    return "caixa-abono";
+  }
   if (texto.includes("Detalle del movimiento")) {
     if (texto.includes("Tipo de Operación") || texto.includes("Tipo de movimiento")) {
       return "santander";
@@ -377,6 +383,14 @@ function extraerCamposDetalle(texto) {
   m = texto.match(/Concepto\s*específico\s*(.+)/);
   if (m) {
     campos.concepto_especifico = m[1].trim();
+  }
+
+  // "Concepto" a secas (≠ "Concepto específico"): clasifica el movimiento en
+  // CaixaBank, p.ej. "IMPUESTOS". El lookahead evita capturar la línea
+  // "Concepto específico".
+  m = texto.match(/\bConcepto\s+(?!espec[ií]fico)([^\n]+)/);
+  if (m) {
+    campos.concepto = m[1].trim();
   }
 
   m = texto.match(/Referencia2\s+(\S+)/);
@@ -694,6 +708,39 @@ function extraerCamposCaixaNoResidente(texto) {
   return campos;
 }
 
+// CaixaBank: comprobante de transferencia recibida ("TRANSFERENCIA A SU FAVOR"
+// / "ABONO"). Es una transferencia a nuestro favor con bloques etiquetados
+// ORDENANTE / BENEFICIARIO / CONCEPTO. Ej: ordenante "JAIME ORLANDO LARREGUI",
+// concepto "RESERVA 2026/27 ...".
+function extraerCamposCaixaAbono(texto) {
+  const campos = { texto, formato: "caixa-abono" };
+  campos.importe_signo = "+";
+
+  // Fecha: primera DD-MM-YY del documento (la fila de datos "14-05-26 ...").
+  let m = texto.match(/\b(\d{2})-(\d{2})-(\d{2})\b/);
+  if (m) campos.fecha_str = `20${m[3]}${m[2]}${m[1]}`;
+
+  // Importe: el único número con formato europeo (coma decimal) del documento;
+  // el resto son códigos/referencias sin decimales.
+  m = texto.match(/([\d.]+,\d{2})/);
+  if (m) campos.importe_abs = m[1];
+
+  // ORDENANTE: quien envía la transferencia.
+  m = texto.match(/ORDENANTE\s*:?\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][^\n]*?)(?=\s{2,}|\n|BENEFICIARIO)/i);
+  if (m) campos.ordenante = m[1].trim();
+
+  // CONCEPTO: motivo que escribe el ordenante. Cortamos antes del bloque del
+  // titular ("RETAMAR...") y de cualquier importe/código que pdf.js cuele al final.
+  m = texto.match(/CONCEPTO\s*:?\s*(.+)/i);
+  if (m) {
+    let cd = m[1].split(/\s+RETAMAR\b/i)[0].trim();
+    cd = cd.replace(/\s+[\d.\s-]*[\d.]+,\d{2}\s*$/, "").trim();
+    if (cd) campos.concepto_distintivo = cd;
+  }
+
+  return campos;
+}
+
 function extraerCampos(texto) {
   const formato = detectarFormato(texto);
   if (formato === "detalle") return extraerCamposDetalle(texto);
@@ -702,6 +749,7 @@ function extraerCampos(texto) {
   if (formato === "santander-orden") return extraerCamposSantanderOrden(texto);
   if (formato === "santander-adeudo") return extraerCamposSantanderAdeudo(texto);
   if (formato === "caixa-no-residente") return extraerCamposCaixaNoResidente(texto);
+  if (formato === "caixa-abono") return extraerCamposCaixaAbono(texto);
   return { texto, formato: "desconocido" };
 }
 
@@ -870,6 +918,13 @@ function detectarTipoYDescripcion(campos) {
     return desc ? ["Trf de", desc] : [null, null];
   }
 
+  if (formato === "caixa-abono") {
+    // Decisión JJB: "Trf de [ordenante]" + el concepto entre paréntesis
+    // (lo añade construirNombre desde concepto_distintivo).
+    const nombre = limpiarNombreOrdenante(campos.ordenante || "");
+    return nombre ? ["Trf de", nombre] : [null, null];
+  }
+
   if (formato === "domiciliacion") {
     const entidad = limpiarRazonSocial(campos.entidad_ordenante || "");
     return entidad ? ["Rec de", entidad] : [null, null];
@@ -883,6 +938,16 @@ function detectarTipoYDescripcion(campos) {
   const acreedor = campos.nombre_acreedor || "";
   const referencia2 = campos.referencia2 || "";
   const signo = campos.importe_signo || "";
+  const concepto = campos.concepto || "";
+
+  // Pagos de impuestos (Concepto = "IMPUESTOS"). El tipo se deriva del concepto
+  // específico normalizado: "I.R.P.F. MOD.111" → "IRPF MOD 111",
+  // "I.V.A. MOD.303" → "IVA MOD 303". Sirve para cualquier modelo.
+  if (/IMPUESTOS/i.test(concepto) && conceptoEsp) {
+    let modelo = conceptoEsp.replace(/\./g, "").replace(/\s+/g, " ").trim();
+    modelo = modelo.replace(/([A-Za-z])(\d)/g, "$1 $2"); // "MOD111" → "MOD 111"
+    return [modelo, ""];
+  }
 
   if (conceptoEsp.includes("TGSS.COTIZACION") || titular.includes("TGSS.COTIZACION")) {
     return ["Pago cuotas SS", ""];
