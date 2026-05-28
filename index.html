@@ -398,6 +398,14 @@ function extraerCamposDetalle(texto) {
     campos.referencia2 = m[1].trim();
   }
 
+  // Traspaso interno entre cuentas propias: CaixaBank trae el destino legible
+  // en "Concepto traspaso" (ej. "IBERIA CARDS"). Lo capturamos aparte porque
+  // el "Concepto específico" suele venir truncado ("Traspaso a Visa I").
+  m = texto.match(/Concepto\s+traspaso\s+(.+)/);
+  if (m) {
+    campos.concepto_traspaso = m[1].trim();
+  }
+
   m = texto.match(/Nombre del ordenante\s+(.+)/);
   if (m) {
     campos.nombre_ordenante = m[1].trim();
@@ -420,7 +428,9 @@ function extraerCamposDetalle(texto) {
   // transferencias recibidas traen un texto identificativo en
   // "Concepto específico" o en el "movimiento_titular". No se aplica a
   // recibos domiciliados (donde el acreedor ya identifica).
-  if (campos.concepto_especifico && /^[A-ZÁÉÍÓÚÑ0-9].*[a-z]/.test(campos.concepto_especifico)) {
+  // En los traspasos internos el "Concepto específico" viene truncado
+  // ("Traspaso a Visa I") y no aporta nada útil: lo omitimos.
+  if (!campos.concepto_traspaso && campos.concepto_especifico && /^[A-ZÁÉÍÓÚÑ0-9].*[a-z]/.test(campos.concepto_especifico)) {
     // Solo si parece texto humano (mezcla mayúsculas/minúsculas), no códigos
     campos.concepto_distintivo = campos.concepto_especifico;
   }
@@ -538,7 +548,10 @@ function extraerCamposSantander(texto) {
   // Concepto completo: descripción larga del movimiento.
   // Aparece como "Concepto completo\n<TEXTO>". Capturamos hasta el siguiente
   // bloque "Información adicional" o final.
-  m = texto.match(/Concepto\s+completo\s*\n?\s*([\s\S]+?)(?:\n\s*Información\s+adicional|$)/i);
+  // El terminador no exige salto de línea: pdf.js a veces pega el valor con la
+  // etiqueta siguiente ("GGEE.Información adicional"), así que cortamos también
+  // ante "Información adicional" o "Detalle del movimiento" aunque vayan pegados.
+  m = texto.match(/Concepto\s+completo\s*\n?\s*([\s\S]+?)(?:\s*Informaci[oó]n\s+adicional|\s*Detalle\s+del\s+movimiento|$)/i);
   if (m) {
     campos.concepto_completo = m[1].replace(/\s+/g, " ").trim();
   }
@@ -842,11 +855,28 @@ function detectarTipoSantander(campos) {
     return ["Ingreso efectivo", ""];
   }
 
+  // 2a-bis) Pago de impuestos: concepto "IMPUESTO: <año> <descripción>. <régimen>."
+  //  Ej: "IMPUESTO: 2025 RETENCIONES E ING. A CTA. GGEE." → "Pago Retenciones E Ing A Cta"
+  //  Quitamos el año, el sufijo de régimen (GGEE = grandes empresas) y los puntos,
+  //  y pasamos a Title Case. Prefijo "Pago" según la convención de Ricardo.
+  let m = concepto.match(/^IMPUESTO\s*:\s*(.+)/i);
+  if (m) {
+    let desc = m[1]
+      .replace(/\b\d{4}\b/, "")
+      .replace(/\bGGEE\b/gi, "")
+      .replace(/\./g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase()
+      .replace(/\b\p{L}/gu, c => c.toUpperCase());
+    if (desc) return ["Pago " + desc, ""];
+  }
+
   // 2b) Recibo domiciliado: concepto empieza por "RECIBO ..."
   //  Ej: "RECIBO SOLRED Nº RECIBO 0049 5185 ..."
   //  Ej: "RECIBO PayPal (Europe) S.a r.l. et Cie, S.C.A. Nº RECIBO 0049 ..."
   //  Capturamos hasta el primer separador conocido (Nº RECIBO, REF., números largos).
-  let m = concepto.match(/^RECIBO\s+(.+?)(?:\s+N[ºo]\s*RECIBO|\s+N[ºo]\s|\s+REF\.|\s+\d{4,})/i);
+  m = concepto.match(/^RECIBO\s+(.+?)(?:\s+N[ºo]\s*RECIBO|\s+N[ºo]\s|\s+REF\.|\s*,|\s+\d{4,})/i);
   if (m) {
     return ["Rec de", limpiarRazonSocial(m[1])];
   }
@@ -967,6 +997,12 @@ function detectarTipoYDescripcion(campos) {
 
   if (conceptoEsp.startsWith("FATIR") && referencia2) {
     return ["Remesa recurrente", `(Ref.${referencia2})`];
+  }
+
+  // Traspaso interno a una cuenta propia (ej. tarjeta IBERIA CARDS). El
+  // destino legible está en "Concepto traspaso".
+  if (campos.concepto_traspaso) {
+    return ["Traspaso a", campos.concepto_traspaso];
   }
 
   if (signo === "+" && ordenante) {
