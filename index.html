@@ -338,6 +338,19 @@ function detectarFormato(texto) {
   if (/TRANSFERENCIA\s+A\s+SU\s+FAVOR/i.test(texto) && /\bABONO\b/.test(texto)) {
     return "caixa-abono";
   }
+  // Avisos del Santander con maquetación "Hola, RETAMAR SA:". No llevan
+  // "ADEUDO POR DOMICILIACIÓN" ni "Detalle del movimiento": los datos van en
+  // preguntas ("¿De qué importe?"). Tres variantes: recibo cobrado,
+  // transferencia enviada y transferencia recibida.
+  if (/De\s+qu[eé]\s+importe/i.test(texto)) {
+    return "aviso-recibo";
+  }
+  if (/Transferencia\s+enviada/i.test(texto) && /Importe\s+enviado\s*:/i.test(texto)) {
+    return "aviso-trf-emitida";
+  }
+  if (/Transferencia\s+recibida/i.test(texto) && /Qui[eé]n\s+te\s+la\s+env[ií]a/i.test(texto)) {
+    return "aviso-trf-recibida";
+  }
   if (texto.includes("Detalle del movimiento")) {
     if (texto.includes("Tipo de Operación") || texto.includes("Tipo de movimiento")) {
       return "santander";
@@ -754,6 +767,98 @@ function extraerCamposCaixaAbono(texto) {
   return campos;
 }
 
+// -----------------------------------------------------------------------------
+// Avisos del Santander ("Hola, RETAMAR SA:"). El dato va detrás de una
+// pregunta o de una etiqueta; el valor termina en el salto de línea o al
+// empezar la siguiente etiqueta conocida.
+// -----------------------------------------------------------------------------
+const CORTE_AVISO = /(?:¿|\bK\b|Destino\b|Origen\b|Concepto\s*:|Referencia\s*:|Tu\s+cuenta|Su\s+cuenta|Entidad\s*:|Importe\s|Enviado\s+a|Quien\s+la\s+recibe|Qui[eé]n\s+la\s+env|Tipo\s+de\s+env|Comisi[oó]n|Comisiones|TOTAL\s|M[aá]s\s+informaci|ID\s+emisor|BIC\b|N[ºo°]\s+de\s+Recibo|Cambio\s+de\s+moneda|Gastos\s+por|Si\s+tienes|Gracias)/;
+
+function valorAviso(texto, re) {
+  const m = texto.match(re);
+  if (!m) return null;
+  let v = texto.slice(m.index + m[0].length);
+  const nl = v.indexOf("\n");
+  if (nl >= 0) v = v.slice(0, nl);
+  const c = v.search(CORTE_AVISO);
+  if (c > 0) v = v.slice(0, c);
+  v = v.replace(/\s+/g, " ").trim();
+  return v || null;
+}
+
+// Concepto del aviso: sirve para distinguir cargos de la misma familia en el
+// mismo día (varios PayPal, varias facturas del mismo proveedor).
+function conceptoAviso(texto) {
+  const v = valorAviso(texto, /Concepto\s*:\s*/i);
+  if (!v) return null;
+  const cd = recortarPieDePagina(v);
+  return cd && !/^-+$/.test(cd) ? cd : null;
+}
+
+// "Recibo que te han cobrado": domiciliación avisada en formato pregunta.
+function extraerCamposAvisoRecibo(texto) {
+  const campos = { texto, formato: "aviso-recibo" };
+  campos.importe_signo = "-";
+
+  campos.emisor = valorAviso(texto, /De\s+qui[eé]n\s+es\?\s*/i) || undefined;
+
+  let m = texto.match(/De\s+qu[eé]\s+importe\?\s*([\d.]+,\d{2})/i);
+  if (m) campos.importe_abs = m[1];
+
+  m = texto.match(/Cu[aá]ndo\s+te\s+lo\s+han\s+cobrado\?\s*(\d{2})-(\d{2})-(\d{4})/i);
+  if (m) campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+
+  const cd = conceptoAviso(texto);
+  if (cd) campos.concepto_distintivo = cd;
+
+  return campos;
+}
+
+// "Transferencia enviada": pago nuestro a un tercero.
+function extraerCamposAvisoTrfEmitida(texto) {
+  const campos = { texto, formato: "aviso-trf-emitida" };
+  campos.importe_signo = "-";
+
+  campos.contraparte = valorAviso(texto, /Enviado\s+a\s*:\s*/i) || undefined;
+
+  let m = texto.match(/Importe\s+enviado\s*:\s*([\d.]+,\d{2})/i);
+  if (m) campos.importe_abs = m[1];
+
+  // Fecha de la orden; si no está, la de envío efectivo.
+  m = texto.match(/Cu[aá]ndo\s+la\s+has\s+hecho\?\s*(\d{2})-(\d{2})-(\d{4})/i)
+   || texto.match(/Cu[aá]ndo\s+se\s+ha\s+enviado\?\s*(\d{2})-(\d{2})-(\d{4})/i)
+   || texto.match(/Fecha\s+operaci[oó]n\s*:\s*(\d{2})-(\d{2})-(\d{4})/i)
+   || texto.match(/Fecha\s+valor\s*:\s*(\d{2})-(\d{2})-(\d{4})/i);
+  if (m) campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+
+  const cd = conceptoAviso(texto);
+  if (cd) campos.concepto_distintivo = cd;
+
+  return campos;
+}
+
+// "Transferencia recibida": ingreso de un tercero en nuestra cuenta.
+function extraerCamposAvisoTrfRecibida(texto) {
+  const campos = { texto, formato: "aviso-trf-recibida" };
+  campos.importe_signo = "+";
+
+  campos.ordenante = valorAviso(texto, /Qui[eé]n\s+te\s+la\s+env[ií]a\?\s*/i) || undefined;
+
+  // "Importe: X EUR" es el ordenado; "Importe recibido" es lo que entra. Nos
+  // quedamos con el recibido cuando exista (puede haber gastos descontados).
+  let m = texto.match(/Importe\s+recibido\s*:\s*([\d.]+,\d{2})/i)
+       || texto.match(/Importe\s*:\s*([\d.]+,\d{2})/i);
+  if (m) campos.importe_abs = m[1];
+
+  m = texto.match(/Fecha\s+operaci[oó]n\s*:\s*(\d{2})-(\d{2})-(\d{4})/i);
+  if (m) campos.fecha_str = `${m[3]}${m[2]}${m[1]}`;
+
+  const cd = conceptoAviso(texto);
+  if (cd) campos.concepto_distintivo = cd;
+
+  return campos;
+}
+
 function extraerCampos(texto) {
   const formato = detectarFormato(texto);
   if (formato === "detalle") return extraerCamposDetalle(texto);
@@ -763,6 +868,9 @@ function extraerCampos(texto) {
   if (formato === "santander-adeudo") return extraerCamposSantanderAdeudo(texto);
   if (formato === "caixa-no-residente") return extraerCamposCaixaNoResidente(texto);
   if (formato === "caixa-abono") return extraerCamposCaixaAbono(texto);
+  if (formato === "aviso-recibo") return extraerCamposAvisoRecibo(texto);
+  if (formato === "aviso-trf-emitida") return extraerCamposAvisoTrfEmitida(texto);
+  if (formato === "aviso-trf-recibida") return extraerCamposAvisoTrfRecibida(texto);
   return { texto, formato: "desconocido" };
 }
 
@@ -913,6 +1021,17 @@ function detectarTipoSantander(campos) {
     return ["Trf a", limpiarRazonSocial(m[1])];
   }
 
+  // 5-bis) Cargos internos del banco, sin contraparte: el propio concepto
+  //  describe el movimiento. Ej: "COBRO TARIFA PLANA" (comisión del paquete),
+  //  "ADEUDO DE REMESA POR EL TOTAL DE LA REMESA" (cargo global de la remesa
+  //  de proveedores, cuyo desglose va en los apuntes individuales).
+  if (/^ADEUDO\s+DE\s+REMESA/i.test(concepto)) {
+    return ["Adeudo de remesa", ""];
+  }
+  if (/^COBRO\s+TARIFA\s+PLANA/i.test(concepto)) {
+    return ["Cobro tarifa plana", ""];
+  }
+
   // 6) Transferencia recibida → "Trf de [NOMBRE]"
   //  Acepta "TRANSFERENCIA DE" y "TRANSFERENCIA INMEDIATA DE"
   m = concepto.match(/TRANSFERENCIA(?:\s+INMEDIATA)?\s+DE\s+(.+?)(?:[,.]|\s+CONCEPTO|$)/i);
@@ -940,6 +1059,21 @@ function detectarTipoYDescripcion(campos) {
   if (formato === "santander-adeudo") {
     const nombre = limpiarRazonSocial(campos.emisor || "");
     return nombre ? ["Rec de", nombre] : [null, null];
+  }
+
+  if (formato === "aviso-recibo") {
+    const nombre = limpiarRazonSocial(campos.emisor || "");
+    return nombre ? ["Rec de", nombre] : [null, null];
+  }
+
+  if (formato === "aviso-trf-emitida") {
+    const nombre = limpiarRazonSocial(campos.contraparte || "");
+    return nombre ? ["Trf a", nombre] : [null, null];
+  }
+
+  if (formato === "aviso-trf-recibida") {
+    const nombre = limpiarNombreOrdenante(campos.ordenante || "");
+    return nombre ? ["Trf de", limpiarRazonSocial(nombre)] : [null, null];
   }
 
   if (formato === "caixa-no-residente") {
