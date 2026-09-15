@@ -617,9 +617,34 @@ function extraerCamposSantanderOrden(texto) {
   }
 
   // Contraparte: para recibidas el ORDENANTE; para emitidas el BENEFICIARIO.
+  // El justificante los pone en una tabla de tres columnas:
+  //    ORDENANTE   IMPORTE   BENEFICIARIO
+  //    RETAMAR SA            LO QUE DE VERDAD IMPORTA
+  // Como extraerTextoPDF marca el salto de columna con dos espacios, basta con
+  // partir la línea de datos y quedarse con el extremo que toque. Sin esto, en
+  // las emitidas saldría el ordenante (nosotros) en lugar del destinatario.
+  const filaTabla = (() => {
+    const lineas = texto.split("\n");
+    const iCab = lineas.findIndex(l => /ORDENANTE/.test(l) && /BENEFICIARIO/.test(l));
+    if (iCab < 0) return null;
+    for (let i = iCab + 1; i < lineas.length && i <= iCab + 3; i++) {
+      const cols = lineas[i].split(/ {2,}/).map(c => c.trim()).filter(Boolean);
+      if (cols.length >= 2) return cols;
+    }
+    return null;
+  })();
+  if (filaTabla) {
+    const col = campos.es_recibida ? filaTabla[0] : filaTabla[filaTabla.length - 1];
+    // Descartamos la columna si es el importe, que a veces cae en medio.
+    if (col && !/^[-+>\s]*[\d.]+,\d{2}/.test(col)) campos.contraparte = col;
+  }
+
+
   // En pdf.js el orden de items es impredecible, por lo que usamos anclas
   // textuales conocidas y aceptamos varios casos.
-  if (campos.es_recibida) {
+  if (campos.contraparte) {
+    // ya resuelto por la tabla
+  } else if (campos.es_recibida) {
     // "ORDENANTE\nNOMBRE\n..." o "ORDENANTE NOMBRE >> X EUR"
     m = texto.match(/ORDENANTE[\s\S]{0,40}?\n\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ0-9 .,&\-'/]+?)(?=\s*\n|\s{2,}|>>)/);
     if (!m) {
@@ -1219,7 +1244,7 @@ async function extraerTextoPDF(file) {
     const y = Math.round(item.transform[5]); // coordenada vertical
     const x = item.transform[4]; // coordenada horizontal
     if (!lineas.has(y)) lineas.set(y, []);
-    lineas.get(y).push({ x, str: item.str });
+    lineas.get(y).push({ x, str: item.str, width: item.width });
   }
 
   // Ordenar las y de mayor a menor (PDF: y crece hacia arriba), e items por x
@@ -1231,14 +1256,25 @@ async function extraerTextoPDF(file) {
     let linea = "";
     let prevEnd = null;
     for (const it of items) {
-      if (prevEnd !== null && it.x - prevEnd > 2) {
-        linea += " ";
+      if (prevEnd !== null) {
+        // Un hueco pequeño separa palabras; uno grande separa columnas de una
+        // tabla. Marcamos la columna con dos espacios para que las reglas
+        // puedan cortar ahí: en los adeudos, "EMISOR | IMPORTE | TITULAR" van
+        // en la misma línea y sin esa marca el emisor se pega al titular
+        // ("AMERICAN EXPRESS EUROPE JAIME DOMINGUEZ B").
+        const hueco = it.x - prevEnd;
+        if (hueco > 20) linea += "  ";
+        else if (hueco > 2) linea += " ";
       }
       linea += it.str;
-      prevEnd = it.x + (it.str.length * 5); // estimación gruesa del ancho
+      // pdf.js da el ancho real del fragmento; la estimación por número de
+      // caracteres solo se usa si falta.
+      prevEnd = it.x + (typeof it.width === "number" && it.width > 0
+        ? it.width
+        : it.str.length * 5);
     }
-    // Normalizar espacios múltiples a uno solo
-    return linea.replace(/\s+/g, " ").trim();
+    // Colapsar espacios sobrantes conservando la marca de columna.
+    return linea.replace(/[^\S ]+/g, " ").replace(/ {3,}/g, "  ").trim();
   });
 
   return lineasTexto.join("\n");
